@@ -39,7 +39,7 @@
 | search_emails | PASS | 5000건 중 page=1, page_size=5 반환, 한글 제목 정상 |
 | read_email | PASS | UID 13979, 한글 제목, HTML 본문 4673자 |
 | read_thread | PASS | Message-ID 기반 스레드 조회 (1건 스레드) |
-| create_draft | - | 수동 테스트 필요 |
+| create_draft | PASS | 한글 제목 초안 저장 성공, Drafts 폴더에 정상 추가 확인 |
 | list_drafts | PASS | 4개 초안 정상 조회, 한글 제목 포함 |
 | send_email | - | 수동 테스트 필요 (실제 발송 방지) |
 | download_attachment | PASS | PNG 303,778 bytes → base64 405,040자 정상 |
@@ -79,4 +79,4 @@
 
 | Date | Changes |
 |------|---------|
-| 2026-03-16 | 초기 테스트: 인코딩 유닛 6개, 보안 8개, 통합 7개 PASS |
+| 2026-03-16 | 초기 테스트: 인코딩 유닛 6개, 보안 8개, 통합 8개 PASS |
