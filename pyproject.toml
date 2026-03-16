@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "naver-mail-mcp"
+version = "0.1.0"
+description = "Naver Mail MCP Server for Claude Desktop"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "chanmuzi"},
+]
+keywords = ["mcp", "naver", "email", "imap", "claude"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+naver-mail-mcp = "naver_mail_mcp.server:main"
