@@ -24,6 +24,9 @@ from .models import (
 IMAP_HOST = "imap.naver.com"
 IMAP_PORT = 993
 TIMEOUT = 30
+MAX_PAGE_SIZE = 100
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
+ALLOWED_BODY_TYPES = {"text/plain", "text/html"}
 
 
 # --- Exceptions ---
@@ -47,6 +50,53 @@ class FolderNotFoundError(NaverIMAPError):
 
 class EmailNotFoundError(NaverIMAPError):
     """Email with specified UID not found."""
+
+
+# --- Input Sanitization ---
+
+
+def _sanitize_folder_name(folder: str) -> str:
+    """Ensure folder name cannot break IMAP quoted-string syntax."""
+    if '"' in folder or "\r" in folder or "\n" in folder or "\x00" in folder:
+        raise ValueError(f"Invalid folder name: contains prohibited characters.")
+    return folder
+
+
+def _sanitize_message_id(value: str) -> str:
+    """Reject Message-IDs containing characters that could break IMAP search."""
+    if not value or '"' in value or "\r" in value or "\n" in value:
+        raise ValueError("Invalid Message-ID: contains prohibited characters.")
+    return value
+
+
+def _sanitize_uid(uid: str) -> str:
+    """Ensure UID contains only digits."""
+    if not uid or not uid.strip().isdigit():
+        raise ValueError(f"Invalid UID: must be a positive integer, got '{uid}'.")
+    return uid.strip()
+
+
+def _sanitize_header_value(value: str) -> str:
+    """Strip CRLF to prevent header injection."""
+    if "\r" in value or "\n" in value:
+        raise ValueError("Header value contains prohibited CRLF characters.")
+    return value
+
+
+def _validate_body_type(body_type: str) -> str:
+    """Validate body_type against allowed values."""
+    if body_type not in ALLOWED_BODY_TYPES:
+        raise ValueError(f"body_type must be one of {ALLOWED_BODY_TYPES}, got '{body_type}'.")
+    return body_type
+
+
+def _validate_pagination(page: int, page_size: int) -> tuple[int, int]:
+    """Validate pagination parameters."""
+    if page < 1:
+        raise ValueError("page must be >= 1.")
+    if not (1 <= page_size <= MAX_PAGE_SIZE):
+        raise ValueError(f"page_size must be between 1 and {MAX_PAGE_SIZE}.")
+    return page, page_size
 
 
 # --- Connection ---
@@ -349,6 +399,8 @@ def search_emails(
     page_size: int = 20,
 ) -> SearchResult:
     """Search emails with filters and pagination."""
+    folder = _sanitize_folder_name(folder)
+    page, page_size = _validate_pagination(page, page_size)
     status, _ = conn.select(f'"{folder}"', readonly=True)
     if status != "OK":
         raise FolderNotFoundError(f"Folder '{folder}' not found. Use list_folders to see available folders.")
@@ -442,6 +494,8 @@ def _fetch_email_summary(conn: imaplib.IMAP4_SSL, uid: bytes) -> EmailSummary | 
 
 def read_email(conn: imaplib.IMAP4_SSL, uid: str, folder: str = "INBOX") -> Email:
     """Read a full email by UID."""
+    uid = _sanitize_uid(uid)
+    folder = _sanitize_folder_name(folder)
     status, _ = conn.select(f'"{folder}"', readonly=True)
     if status != "OK":
         raise FolderNotFoundError(f"Folder '{folder}' not found. Use list_folders to see available folders.")
@@ -535,6 +589,8 @@ def read_thread(conn: imaplib.IMAP4_SSL, message_id: str, folder: str = "INBOX")
     Finds all related emails via References and In-Reply-To headers.
     All operations use a single connection.
     """
+    message_id = _sanitize_message_id(message_id)
+    folder = _sanitize_folder_name(folder)
     status, _ = conn.select(f'"{folder}"', readonly=True)
     if status != "OK":
         raise FolderNotFoundError(f"Folder '{folder}' not found.")
@@ -564,22 +620,25 @@ def read_thread(conn: imaplib.IMAP4_SSL, message_id: str, folder: str = "INBOX")
 
     all_uids = set()
     for mid in all_message_ids:
+        safe_mid = mid.replace('"', "").strip()
+        if not safe_mid:
+            continue
         try:
-            status, data = conn.uid("SEARCH", None, f'HEADER Message-ID "{mid}"')
+            status, data = conn.uid("SEARCH", None, f'HEADER Message-ID "{safe_mid}"')
             if status == "OK" and data[0]:
                 all_uids.update(data[0].split())
         except imaplib.IMAP4.error:
             continue
 
         try:
-            status, data = conn.uid("SEARCH", None, f'HEADER References "{mid}"')
+            status, data = conn.uid("SEARCH", None, f'HEADER References "{safe_mid}"')
             if status == "OK" and data[0]:
                 all_uids.update(data[0].split())
         except imaplib.IMAP4.error:
             continue
 
         try:
-            status, data = conn.uid("SEARCH", None, f'HEADER In-Reply-To "{mid}"')
+            status, data = conn.uid("SEARCH", None, f'HEADER In-Reply-To "{safe_mid}"')
             if status == "OK" and data[0]:
                 all_uids.update(data[0].split())
         except imaplib.IMAP4.error:
@@ -633,11 +692,13 @@ def create_draft(
     cc: list[str] | None = None,
 ) -> dict:
     """Save an email draft to the Drafts folder."""
+    body_type = _validate_body_type(body_type)
     drafts_folder = _find_drafts_folder(conn)
 
     msg = email.message.EmailMessage()
     if full_name:
-        msg["From"] = f"{full_name} <{email_address}>"
+        safe_name = _sanitize_header_value(full_name.strip())
+        msg["From"] = f"{safe_name} <{email_address}>"
     else:
         msg["From"] = email_address
     msg["To"] = ", ".join(to)
@@ -675,6 +736,8 @@ def download_attachment(
 
     Returns the attachment content as base64-encoded string.
     """
+    uid = _sanitize_uid(uid)
+    folder = _sanitize_folder_name(folder)
     status, _ = conn.select(f'"{folder}"', readonly=True)
     if status != "OK":
         raise FolderNotFoundError(f"Folder '{folder}' not found.")
@@ -697,6 +760,12 @@ def download_attachment(
             payload = part.get_payload(decode=True)
             if payload is None:
                 raise NaverIMAPError(f"Attachment part '{part_number}' has no content.")
+
+            if len(payload) > MAX_ATTACHMENT_BYTES:
+                raise NaverIMAPError(
+                    f"Attachment size ({len(payload):,} bytes) exceeds the "
+                    f"{MAX_ATTACHMENT_BYTES:,}-byte limit."
+                )
 
             filename = part.get_filename()
             if filename:
