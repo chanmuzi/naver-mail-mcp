@@ -41,7 +41,7 @@
 | read_thread | PASS | Message-ID 기반 스레드 조회 (1건 스레드) |
 | create_draft | PASS | 한글 제목 초안 저장 성공, Drafts 폴더에 정상 추가 확인 |
 | list_drafts | PASS | 4개 초안 정상 조회, 한글 제목 포함 |
-| send_email | - | 수동 테스트 필요 (실제 발송 방지) |
+| send_email | PASS | chanmuzi22@gmail.com으로 테스트 메일 발송 성공 |
 | download_attachment | PASS | PNG 303,778 bytes → base64 405,040자 정상 |
 
 ## Korean Encoding Tests
@@ -80,3 +80,4 @@
 | Date | Changes |
 |------|---------|
 | 2026-03-16 | 초기 테스트: 인코딩 유닛 6개, 보안 8개, 통합 8개 PASS |
+| 2026-03-16 | send_email 테스트 PASS (chanmuzi22@gmail.com 발송 확인) — 9/9 전부 PASS |
