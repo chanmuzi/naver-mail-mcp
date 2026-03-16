@@ -26,6 +26,8 @@ uvx naver-mail-mcp
 
 ## Claude Desktop Configuration
 
+### PyPI 배포 후 (권장)
+
 `claude_desktop_config.json`에 추가:
 
 ```json
@@ -44,6 +46,35 @@ uvx naver-mail-mcp
 }
 ```
 
+### 로컬 개발 모드
+
+PyPI에 배포하기 전, 로컬 소스에서 직접 실행:
+
+```json
+{
+  "mcpServers": {
+    "naver-email": {
+      "command": "/absolute/path/to/uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/naver-mail-mcp",
+        "run",
+        "naver-mail-mcp"
+      ],
+      "env": {
+        "NAVER_EMAIL_ADDRESS": "your_email@naver.com",
+        "NAVER_EMAIL_PASSWORD": "your_app_password",
+        "NAVER_FULL_NAME": "Your Name"
+      }
+    }
+  }
+}
+```
+
+> **주의:** Claude Desktop은 시스템 PATH를 상속하지 않습니다. `command`에는 반드시 `uv`의 **절대 경로**를 사용하세요. (예: `/Users/username/.local/bin/uv`)
+>
+> `which uv` 명령으로 절대 경로를 확인할 수 있습니다.
+
 ## Prerequisites
 
 1. **Python 3.10+**
@@ -59,6 +90,69 @@ uvx naver-mail-mcp
 | `NAVER_EMAIL_ADDRESS` | Yes | 네이버 이메일 주소 |
 | `NAVER_EMAIL_PASSWORD` | Yes | 애플리케이션 비밀번호 (계정 비밀번호 아님) |
 | `NAVER_FULL_NAME` | No | 발신 메일 표시 이름 |
+
+## Tools Reference
+
+### get_profile
+계정 프로필 조회. 파라미터 없음.
+
+### search_emails
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| folder | string | No | INBOX | 검색할 폴더 |
+| sender | string | No | - | 발신자 필터 |
+| recipient | string | No | - | 수신자 필터 |
+| subject | string | No | - | 제목 키워드 |
+| date_from | string | No | - | 시작 날짜 (DD-Mon-YYYY) |
+| date_to | string | No | - | 종료 날짜 (DD-Mon-YYYY) |
+| is_read | boolean | No | - | 읽음 여부 (true/false/null) |
+| page | integer | No | 1 | 페이지 번호 |
+| page_size | integer | No | 20 | 페이지당 결과 수 (최대 100) |
+
+### read_email
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| uid | string | Yes | - | 메일 고유 ID |
+| folder | string | No | INBOX | 폴더 |
+
+### read_thread
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| message_id | string | Yes | - | Message-ID 헤더 값 |
+| folder | string | No | INBOX | 폴더 |
+
+### list_folders
+폴더 목록 조회. 파라미터 없음.
+
+### create_draft
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| to | array | Yes | - | 수신자 목록 |
+| subject | string | Yes | - | 제목 |
+| body | string | Yes | - | 본문 |
+| body_type | string | No | text/plain | text/plain 또는 text/html |
+| cc | array | No | - | 참조 목록 |
+
+### list_drafts
+초안 목록 조회. 파라미터 없음.
+
+### send_email
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| to | array | Yes | - | 수신자 목록 |
+| subject | string | Yes | - | 제목 |
+| body | string | Yes | - | 본문 |
+| body_type | string | No | text/plain | text/plain 또는 text/html |
+| cc | array | No | - | 참조 목록 |
+| in_reply_to | string | No | - | 답장 대상 Message-ID |
+| references | array | No | - | 스레드 Message-ID 목록 |
+
+### download_attachment
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| uid | string | Yes | - | 메일 고유 ID |
+| part_number | string | Yes | - | MIME 파트 번호 (read_email에서 확인) |
+| folder | string | No | INBOX | 폴더 |
 
 ## Development
 
@@ -86,6 +180,7 @@ python -m tests.test_integration
 | `Cannot connect to Naver IMAP server` | 네트워크 확인, IMAP 사용 설정 확인 |
 | `Missing required environment variables` | NAVER_EMAIL_ADDRESS, NAVER_EMAIL_PASSWORD 환경변수 설정 |
 | `Folder not found` | `list_folders` 도구로 사용 가능한 폴더명 확인 |
+| `Failed to spawn process` | `command`에 `uv`의 절대 경로 사용 (`which uv`로 확인) |
 
 ## Technical Details
 
