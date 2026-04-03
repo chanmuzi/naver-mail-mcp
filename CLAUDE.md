@@ -7,7 +7,7 @@
 
 ## Tools (9개)
 
-get_profile, search_emails, read_email, read_thread, list_folders, create_draft, list_drafts, send_email, download_attachment
+`get_profile`, `search_emails`, `read_email`, `read_thread`, `list_folders`, `create_draft`, `list_drafts`, `send_email`, `download_attachment`
 
 ## Security
 
@@ -18,5 +18,5 @@ get_profile, search_emails, read_email, read_thread, list_folders, create_draft,
 
 ## Testing
 
-- 통합 테스트: 8/9 PASS (실제 네이버 IMAP/SMTP 서버 대상)
-- `send_email`은 실제 메일이 발송되므로 수동 테스트 필요
+- 자동화된 통합 테스트: 8/8 PASS (실제 네이버 IMAP/SMTP 서버 대상, `send_email` 제외)
+- `send_email`은 실제 메일이 발송되므로 자동화된 통합 테스트에서 제외하며, 별도 수동 테스트가 필요
