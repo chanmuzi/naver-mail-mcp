@@ -1,6 +1,6 @@
 """Naver Mail MCP Server.
 
-Provides 9 tools for interacting with Naver Mail via IMAP/SMTP.
+Provides 7 read tools and 2 opt-in write tools for Naver Mail via IMAP/SMTP.
 All logging goes to stderr — stdout is reserved for MCP JSON-RPC.
 """
 
@@ -20,6 +20,18 @@ logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(name)s - %(
 logger = logging.getLogger("naver-mail-mcp")
 
 mcp = FastMCP("naver-mail-mcp")
+
+
+def _write_tool(fn):
+    """Only register mutating tools when the operator explicitly enables them."""
+    if os.environ.get("NAVER_MAIL_ENABLE_WRITES") == "1":
+        return mcp.tool()(fn)
+    return fn
+
+
+def _require_writes() -> None:
+    if os.environ.get("NAVER_MAIL_ENABLE_WRITES") != "1":
+        raise PermissionError("Write tools require NAVER_MAIL_ENABLE_WRITES=1.")
 
 
 def _get_credentials() -> tuple[str, str, str]:
@@ -146,7 +158,7 @@ def list_folders() -> str:
     return json.dumps([to_dict(f) for f in result], ensure_ascii=False)
 
 
-@mcp.tool()
+@_write_tool
 def create_draft(
     to: list[str],
     subject: str,
@@ -166,6 +178,7 @@ def create_draft(
     Returns:
         JSON string confirming draft was saved.
     """
+    _require_writes()
     email_addr, password, full_name = _get_credentials()
     with imap_client.imap_connection(email_addr, password) as conn:
         result = imap_client.create_draft(
@@ -187,7 +200,7 @@ def list_drafts() -> str:
     return json.dumps([to_dict(d) for d in result], ensure_ascii=False)
 
 
-@mcp.tool()
+@_write_tool
 def send_email(
     to: list[str],
     subject: str,
@@ -211,6 +224,7 @@ def send_email(
     Returns:
         JSON string confirming email was sent.
     """
+    _require_writes()
     email_addr, password, full_name = _get_credentials()
     result = smtp_client.send_email(
         email_addr, password, full_name,
