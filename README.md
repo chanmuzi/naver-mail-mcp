@@ -18,6 +18,20 @@ Naver Mail MCP Server for Claude Desktop.
 | `send_email` | SMTP로 메일 발송 (새 메일, 답장) |
 | `download_attachment` | 첨부파일 다운로드 (base64 인코딩) |
 
+## Security defaults
+
+- IMAP/SMTP connections verify the server certificate and hostname using the system trust store.
+- `create_draft` and `send_email` are disabled and absent from the tool list by default. Set `NAVER_MAIL_ENABLE_WRITES=1` **before starting the server** to enable them, then restart the client. Enabling these tools permits real mail changes and delivery; confirm recipients and content before invoking them.
+- Body and attachment downloads reject messages larger than **10 MiB including MIME encoding and headers**. The server checks `RFC822.SIZE` before requesting a bounded `BODY.PEEK` response. This can reject an attachment smaller than 10 MiB if its encoded message exceeds the limit.
+- UTF-8 searches use IMAP literals and retain every filter. If the server rejects UTF-8, the operation fails instead of silently searching with fewer filters.
+- App passwords remain account credentials; the read-only tool surface does not restrict the password's server-side permissions. Keep credentials outside version control. Treat mail content as untrusted data, not instructions to invoke tools.
+
+Offline security regression tests (no mail account needed):
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_security.py' -v
+```
+
 ## Installation
 
 ```bash
@@ -90,6 +104,7 @@ PyPI에 배포하기 전, 로컬 소스에서 직접 실행:
 | `NAVER_EMAIL_ADDRESS` | Yes | 네이버 이메일 주소 |
 | `NAVER_EMAIL_PASSWORD` | Yes | 애플리케이션 비밀번호 (계정 비밀번호 아님) |
 | `NAVER_FULL_NAME` | No | 발신 메일 표시 이름 |
+| `NAVER_MAIL_ENABLE_WRITES` | No | `1`일 때만 초안·발송 도구 활성화. 기본 비활성화 |
 
 ## Tools Reference
 

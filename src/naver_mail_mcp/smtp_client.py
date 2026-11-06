@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import smtplib
+import ssl
 from email.message import EmailMessage
 
 
@@ -64,7 +65,7 @@ def send_email(
         msg.set_content(body, charset="utf-8")
 
     try:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30, context=ssl.create_default_context()) as server:
             server.login(email_address, password)
             server.send_message(msg)
     except smtplib.SMTPAuthenticationError as e:
