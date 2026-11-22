@@ -40,6 +40,8 @@ class Email:
     references: list[str]
     in_reply_to: str
     attachments: list[AttachmentMeta] = field(default_factory=list)
+    # Set when the body was not downloaded (e.g. the message exceeds the size limit).
+    notice: str = ""
 
 
 @dataclass

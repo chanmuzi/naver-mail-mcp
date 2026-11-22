@@ -1,6 +1,7 @@
 """Naver Mail MCP Server.
 
-Provides 7 read tools and 2 opt-in write tools for Naver Mail via IMAP/SMTP.
+Provides 9 tools for interacting with Naver Mail via IMAP/SMTP.
+The two mutating tools (create_draft, send_email) are left out when NAVER_MAIL_READ_ONLY is set.
 All logging goes to stderr — stdout is reserved for MCP JSON-RPC.
 """
 
@@ -13,7 +14,7 @@ import sys
 
 from mcp.server.fastmcp import FastMCP
 
-from . import imap_client, smtp_client
+from . import config, imap_client, smtp_client
 from .models import to_dict
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(name)s - %(message)s")
@@ -23,15 +24,16 @@ mcp = FastMCP("naver-mail-mcp")
 
 
 def _write_tool(fn):
-    """Only register mutating tools when the operator explicitly enables them."""
-    if os.environ.get("NAVER_MAIL_ENABLE_WRITES") == "1":
-        return mcp.tool()(fn)
-    return fn
+    """Register a mutating tool unless the operator started the server read-only."""
+    if config.is_read_only():
+        return fn
+    return mcp.tool()(fn)
 
 
 def _require_writes() -> None:
-    if os.environ.get("NAVER_MAIL_ENABLE_WRITES") != "1":
-        raise PermissionError("Write tools require NAVER_MAIL_ENABLE_WRITES=1.")
+    """Refuse mutating calls in read-only mode even if the function is reached directly."""
+    if config.is_read_only():
+        raise PermissionError(f"Write tools are disabled because {config.READ_ONLY_ENV} is set.")
 
 
 def _get_credentials() -> tuple[str, str, str]:
@@ -262,7 +264,16 @@ def main():
         print(str(e), file=sys.stderr)
         sys.exit(1)
 
-    logger.info("Starting Naver Mail MCP Server")
+    try:
+        limit = config.max_message_bytes()
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+    logger.info(
+        "Starting Naver Mail MCP Server (read_only=%s, max_message_bytes=%d)",
+        config.is_read_only(), limit,
+    )
     mcp.run(transport="stdio")
 
 
