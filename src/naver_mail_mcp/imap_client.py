@@ -9,8 +9,10 @@ import email.header
 import email.utils
 import imaplib
 import re
+import ssl
 from typing import Generator
 
+from . import config
 from .models import (
     AttachmentContent,
     AttachmentMeta,
@@ -26,7 +28,12 @@ IMAP_PORT = 993
 TIMEOUT = 30
 MAX_PAGE_SIZE = 100
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_HEADER_BYTES = 1024 * 1024
+MAX_THREAD_IDS = 100
+MAX_THREAD_MESSAGES = 50
 ALLOWED_BODY_TYPES = {"text/plain", "text/html"}
+# A bracketed msg-id: printable ASCII without spaces, angle brackets, quotes or backslashes.
+_MESSAGE_ID_RE = re.compile(r"<[!#-;=?-\[\]-~]+>")
 
 
 # --- Exceptions ---
@@ -52,6 +59,10 @@ class EmailNotFoundError(NaverIMAPError):
     """Email with specified UID not found."""
 
 
+class MessageTooLargeError(NaverIMAPError):
+    """Message is larger than the configured download limit."""
+
+
 # --- Input Sanitization ---
 
 
@@ -63,10 +74,23 @@ def _sanitize_folder_name(folder: str) -> str:
 
 
 def _sanitize_message_id(value: str) -> str:
-    """Reject Message-IDs containing characters that could break IMAP search."""
-    if not value or '"' in value or "\r" in value or "\n" in value:
-        raise ValueError("Invalid Message-ID: contains prohibited characters.")
+    """Accept only a single bracketed Message-ID that is safe inside an IMAP quoted string.
+
+    IMAP HEADER search matches substrings, so a bare fragment such as "." would
+    match nearly every message. Requiring the angle brackets keeps the search
+    anchored to one whole Message-ID.
+    """
+    if len(value) > 998 or not _MESSAGE_ID_RE.fullmatch(value):
+        raise ValueError("Invalid Message-ID: expected a single value in the form '<id@domain>'.")
     return value
+
+
+def _normalize_message_id(value: str) -> str:
+    """Add the angle brackets a caller may have left off, then validate."""
+    stripped = value.strip()
+    if stripped and not (stripped.startswith("<") and stripped.endswith(">")):
+        stripped = f"<{stripped}>"
+    return _sanitize_message_id(stripped)
 
 
 def _sanitize_uid(uid: str) -> str:
@@ -110,7 +134,9 @@ def imap_connection(email_address: str, password: str) -> Generator[imaplib.IMAP
     Login errors are caught separately from operation errors.
     """
     try:
-        conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=TIMEOUT)
+        conn = imaplib.IMAP4_SSL(
+            IMAP_HOST, IMAP_PORT, timeout=TIMEOUT, ssl_context=ssl.create_default_context()
+        )
     except (OSError, imaplib.IMAP4.error) as e:
         raise NaverConnectionError(
             f"Cannot connect to Naver IMAP server ({IMAP_HOST}:{IMAP_PORT}). "
@@ -227,7 +253,11 @@ def _parse_date(date_str: str | None) -> str:
     """Parse email date to ISO 8601 string."""
     if not date_str:
         return ""
-    parsed = email.utils.parsedate_to_datetime(date_str)
+    try:
+        parsed = email.utils.parsedate_to_datetime(date_str)
+    except (TypeError, ValueError):
+        # A malformed Date header must not make the whole message unreadable.
+        return ""
     return parsed.isoformat()
 
 
@@ -406,37 +436,57 @@ def search_emails(
         raise FolderNotFoundError(f"Folder '{folder}' not found. Use list_folders to see available folders.")
 
     criteria = []
+    unicode_filters = []
+
+    for value in (sender, recipient, subject, date_from, date_to):
+        if value is not None and (len(value) > 4096 or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+            raise ValueError("Search values must not contain control characters or exceed 4096 characters.")
+
+    def add_filter(key: str, value: str) -> None:
+        if value.isascii():
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            criteria.extend([key, f'"{escaped}"'])
+        else:
+            unicode_filters.append((key, value.encode("utf-8")))
 
     if sender:
-        criteria.extend(["FROM", sender])
+        add_filter("FROM", sender)
     if recipient:
-        criteria.extend(["TO", recipient])
+        add_filter("TO", recipient)
     if subject:
-        criteria.extend(["SUBJECT", subject])
+        add_filter("SUBJECT", subject)
     if date_from:
-        criteria.extend(["SINCE", date_from])
+        add_filter("SINCE", date_from)
     if date_to:
-        criteria.extend(["BEFORE", date_to])
+        add_filter("BEFORE", date_to)
     if is_read is True:
         criteria.append("SEEN")
     elif is_read is False:
         criteria.append("UNSEEN")
 
-    if not criteria:
+    if not criteria and not unicode_filters:
         criteria.append("ALL")
 
-    try:
-        if any(not c.isascii() for c in criteria if isinstance(c, str)):
-            status, data = conn.uid("SEARCH", "CHARSET", "UTF-8", *criteria)
-        else:
-            status, data = conn.uid("SEARCH", *criteria)
-    except imaplib.IMAP4.error:
-        status, data = conn.uid("SEARCH", *[c for c in criteria if c.isascii()])
-
-    if status != "OK":
-        raise NaverIMAPError("Search failed.")
-
-    uid_list = data[0].split() if data[0] else []
+    uid_list = None
+    if criteria:
+        status, data = conn.uid("SEARCH", *criteria)
+        if status != "OK":
+            raise NaverIMAPError("Search failed.")
+        uid_list = data[0].split() if data[0] else []
+    # imaplib supports one synchronizing literal per command. Intersect separate
+    # searches so multiple UTF-8 filters retain AND semantics without raw commands.
+    for key, literal in unicode_filters:
+        conn.literal = literal
+        try:
+            status, data = conn.uid("SEARCH", "CHARSET", "UTF-8", key)
+        finally:
+            conn.literal = None
+        if status != "OK":
+            raise NaverIMAPError("UTF-8 search failed; search filters were not relaxed.")
+        matches = data[0].split() if data[0] else []
+        matching_uids = set(matches)
+        uid_list = matches if uid_list is None else [uid for uid in uid_list if uid in matching_uids]
+    uid_list = uid_list or []
     uid_list.reverse()
 
     total_count = len(uid_list)
@@ -492,6 +542,45 @@ def _fetch_email_summary(conn: imaplib.IMAP4_SSL, uid: bytes) -> EmailSummary | 
     )
 
 
+def _fetch_message(conn: imaplib.IMAP4_SSL, uid: str) -> list:
+    """Check advertised size, then request a bounded, non-marking message body."""
+    limit = config.max_message_bytes()
+    status, sizes = conn.uid("FETCH", uid, "(RFC822.SIZE)")
+    if status == "OK" and not any(sizes or []):
+        # A UID that does not exist yields an OK response with no data.
+        raise EmailNotFoundError(f"Email with UID '{uid}' not found.")
+    size_data = b" ".join(item for item in sizes or [] if isinstance(item, bytes))
+    match = re.search(rb"\bRFC822\.SIZE (\d+)\b", size_data)
+    if status != "OK" or match is None:
+        raise NaverIMAPError("Cannot determine message size; refusing body download.")
+    size = int(match[1])
+    if size > limit:
+        raise MessageTooLargeError(
+            f"Message UID '{uid}' is {size:,} bytes, which exceeds the {limit:,}-byte limit "
+            f"(headers and MIME encoding included). Set {config.MAX_MESSAGE_MB_ENV} to raise the limit."
+        )
+    status, data = conn.uid("FETCH", uid, f"(FLAGS BODY.PEEK[]<0.{limit + 1}>)")
+    if status != "OK" or not data or data[0] is None:
+        raise EmailNotFoundError(f"Email with UID '{uid}' not found.")
+    if sum(len(item[1]) for item in data if isinstance(item, tuple)) > limit:
+        raise MessageTooLargeError("Message response exceeds the download limit.")
+    return data
+
+
+def _split_fetch_response(data: list) -> tuple[str, bytes]:
+    """Extract the FLAGS string and the literal payload from a FETCH response."""
+    flags_str = ""
+    payload = b""
+    for part in data:
+        if isinstance(part, tuple):
+            meta = part[0].decode("utf-8", errors="replace") if isinstance(part[0], bytes) else part[0]
+            flags_match = re.search(r"FLAGS \(([^)]*)\)", meta)
+            if flags_match:
+                flags_str = flags_match.group(1)
+            payload = part[1] if isinstance(part[1], bytes) else part[1].encode()
+    return flags_str, payload
+
+
 def read_email(conn: imaplib.IMAP4_SSL, uid: str, folder: str = "INBOX") -> Email:
     """Read a full email by UID."""
     uid = _sanitize_uid(uid)
@@ -500,20 +589,25 @@ def read_email(conn: imaplib.IMAP4_SSL, uid: str, folder: str = "INBOX") -> Emai
     if status != "OK":
         raise FolderNotFoundError(f"Folder '{folder}' not found. Use list_folders to see available folders.")
 
-    status, data = conn.uid("FETCH", uid, "(FLAGS RFC822)")
+    flags_str, raw_email = _split_fetch_response(_fetch_message(conn, uid))
+    return _build_email(uid, flags_str, raw_email)
+
+
+def _read_email_headers(conn: imaplib.IMAP4_SSL, uid: str, notice: str) -> Email:
+    """Read only the headers of an email in the selected folder.
+
+    Used for messages too large to download, so callers still learn who sent
+    them and why the body is missing.
+    """
+    status, data = conn.uid("FETCH", uid, f"(FLAGS BODY.PEEK[HEADER]<0.{MAX_HEADER_BYTES}>)")
     if status != "OK" or not data or data[0] is None:
-        raise EmailNotFoundError(f"Email with UID '{uid}' not found in folder '{folder}'.")
+        raise EmailNotFoundError(f"Email with UID '{uid}' not found.")
+    flags_str, raw_headers = _split_fetch_response(data)
+    return _build_email(uid, flags_str, raw_headers, notice=notice)
 
-    flags_str = ""
-    raw_email = b""
-    for part in data:
-        if isinstance(part, tuple):
-            meta = part[0].decode("utf-8", errors="replace") if isinstance(part[0], bytes) else part[0]
-            flags_match = re.search(r"FLAGS \(([^)]*)\)", meta)
-            if flags_match:
-                flags_str = flags_match.group(1)
-            raw_email = part[1] if isinstance(part[1], bytes) else part[1].encode()
 
+def _build_email(uid: str, flags_str: str, raw_email: bytes, notice: str = "") -> Email:
+    """Parse raw message bytes into an Email."""
     msg = email.message_from_bytes(raw_email)
 
     subject = decode_header_value(msg.get("Subject"))
@@ -580,6 +674,7 @@ def read_email(conn: imaplib.IMAP4_SSL, uid: str, folder: str = "INBOX") -> Emai
         references=references,
         in_reply_to=in_reply_to,
         attachments=attachments,
+        notice=notice,
     )
 
 
@@ -589,7 +684,7 @@ def read_thread(conn: imaplib.IMAP4_SSL, message_id: str, folder: str = "INBOX")
     Finds all related emails via References and In-Reply-To headers.
     All operations use a single connection.
     """
-    message_id = _sanitize_message_id(message_id)
+    message_id = _normalize_message_id(message_id)
     folder = _sanitize_folder_name(folder)
     status, _ = conn.select(f'"{folder}"', readonly=True)
     if status != "OK":
@@ -618,10 +713,14 @@ def read_thread(conn: imaplib.IMAP4_SSL, message_id: str, folder: str = "INBOX")
                     if irt:
                         all_message_ids.add(irt.strip())
 
+    # The requested ID always comes first; header-derived IDs are attacker-controlled, so cap them.
+    related_ids = sorted(all_message_ids - {message_id})[: MAX_THREAD_IDS - 1]
+
     all_uids = set()
-    for mid in all_message_ids:
-        safe_mid = mid.replace('"', "").strip()
-        if not safe_mid:
+    for mid in [message_id, *related_ids]:
+        try:
+            safe_mid = _sanitize_message_id(mid.strip())
+        except ValueError:
             continue
         try:
             status, data = conn.uid("SEARCH", None, f'HEADER Message-ID "{safe_mid}"')
@@ -644,11 +743,21 @@ def read_thread(conn: imaplib.IMAP4_SSL, message_id: str, folder: str = "INBOX")
         except imaplib.IMAP4.error:
             continue
 
+    if len(all_uids) > MAX_THREAD_MESSAGES:
+        raise NaverIMAPError(
+            f"Thread matches {len(all_uids)} messages, which exceeds the limit of {MAX_THREAD_MESSAGES}. "
+            "Use search_emails and read_email to read them individually."
+        )
+
     thread_emails = []
     for uid in all_uids:
         uid_str = uid.decode("utf-8") if isinstance(uid, bytes) else str(uid)
         try:
-            mail = read_email(conn, uid_str, folder)
+            try:
+                mail = read_email(conn, uid_str, folder)
+            except MessageTooLargeError as e:
+                # Keep the rest of the thread readable: return headers plus a notice.
+                mail = _read_email_headers(conn, uid_str, notice=str(e))
             thread_emails.append(mail)
         except EmailNotFoundError:
             continue
@@ -742,14 +851,7 @@ def download_attachment(
     if status != "OK":
         raise FolderNotFoundError(f"Folder '{folder}' not found.")
 
-    status, data = conn.uid("FETCH", uid, "(RFC822)")
-    if status != "OK" or not data or data[0] is None:
-        raise EmailNotFoundError(f"Email with UID '{uid}' not found in folder '{folder}'.")
-
-    raw_email = b""
-    for part_data in data:
-        if isinstance(part_data, tuple):
-            raw_email = part_data[1] if isinstance(part_data[1], bytes) else part_data[1].encode()
+    _, raw_email = _split_fetch_response(_fetch_message(conn, uid))
 
     msg = email.message_from_bytes(raw_email)
 

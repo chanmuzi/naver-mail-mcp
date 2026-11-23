@@ -18,6 +18,22 @@ Naver Mail MCP Server for Claude Desktop.
 | `send_email` | SMTP로 메일 발송 (새 메일, 답장) |
 | `download_attachment` | 첨부파일 다운로드 (base64 인코딩) |
 
+## Security defaults
+
+- IMAP/SMTP connections verify the server certificate and hostname using the system trust store.
+- Search values are quoted or sent as UTF-8 literals, and control characters are rejected. Every filter is kept: if the server rejects a search, the call fails instead of silently searching with fewer filters.
+- `create_draft` and `send_email` are enabled by default. Set `NAVER_MAIL_READ_ONLY=1` **before starting the server** to remove them from the tool list, then restart the client.
+- Body and attachment downloads reject messages larger than **50 MiB including MIME encoding and headers**. The server checks `RFC822.SIZE` before requesting a bounded `BODY.PEEK` response. Change the limit with `NAVER_MAIL_MAX_MESSAGE_MB`. In `read_thread`, an oversized message is returned with headers only and a `notice` explaining why the body is missing.
+- A single attachment larger than 10 MiB (decoded) is not returned by `download_attachment`.
+- `read_thread` accepts only whole Message-IDs in the form `<id@domain>` and stops if a thread matches more than 50 messages, so a crafted `References` header cannot pull in the whole folder.
+- Read-only mode is a tool policy, not a credential scope: the app password keeps its full server-side permissions. Keep credentials outside version control, and treat mail content as untrusted data, not as instructions to invoke tools.
+
+Offline security regression tests (no mail account needed):
+
+```bash
+uv run python -m unittest discover -s tests -p 'test_security.py' -v
+```
+
 ## Installation
 
 ```bash
@@ -90,6 +106,8 @@ PyPI에 배포하기 전, 로컬 소스에서 직접 실행:
 | `NAVER_EMAIL_ADDRESS` | Yes | 네이버 이메일 주소 |
 | `NAVER_EMAIL_PASSWORD` | Yes | 애플리케이션 비밀번호 (계정 비밀번호 아님) |
 | `NAVER_FULL_NAME` | No | 발신 메일 표시 이름 |
+| `NAVER_MAIL_READ_ONLY` | No | `1`이면 `create_draft`, `send_email` 도구를 등록하지 않음 (기본: 비활성화, 9개 도구 모두 사용) |
+| `NAVER_MAIL_MAX_MESSAGE_MB` | No | 내려받을 메일의 최대 크기 (MiB, 헤더와 MIME 인코딩 포함, 기본 50) |
 
 ## Tools Reference
 
@@ -168,7 +186,10 @@ uv pip install -e .
 cp .env.example .env
 # Edit .env with your credentials
 
-# Run tests
+# Run offline security tests (no account needed)
+python -m unittest discover -s tests -p 'test_security.py' -v
+
+# Run integration tests (real Naver account, read-only)
 python -m tests.test_integration
 ```
 
@@ -180,6 +201,8 @@ python -m tests.test_integration
 | `Cannot connect to Naver IMAP server` | 네트워크 확인, IMAP 사용 설정 확인 |
 | `Missing required environment variables` | NAVER_EMAIL_ADDRESS, NAVER_EMAIL_PASSWORD 환경변수 설정 |
 | `Folder not found` | `list_folders` 도구로 사용 가능한 폴더명 확인 |
+| `Message ... exceeds the ...-byte limit` | `NAVER_MAIL_MAX_MESSAGE_MB` 값을 높인 뒤 서버 재시작 |
+| `create_draft`, `send_email` 도구가 보이지 않음 | `NAVER_MAIL_READ_ONLY` 설정 여부 확인 |
 | `Failed to spawn process` | `command`에 `uv`의 절대 경로 사용 (`which uv`로 확인) |
 
 ## Technical Details
@@ -189,7 +212,8 @@ python -m tests.test_integration
 - **Transport**: stdio (Claude Desktop 연동)
 - **Encoding**: UTF-8, EUC-KR, Modified UTF-7 (폴더명) 자동 처리
 - **Connection**: 각 도구 호출마다 새 연결 (stateless)
-- **Attachment limit**: 10MB (base64 인코딩)
+- **Attachment limit**: 10MiB (디코딩 후 첨부파일 1개 기준)
+- **Message limit**: 50MiB (`NAVER_MAIL_MAX_MESSAGE_MB`로 조정)
 
 ## License
 

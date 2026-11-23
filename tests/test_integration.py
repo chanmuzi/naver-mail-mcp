@@ -199,3 +199,4 @@ if __name__ == "__main__":
     print(f"\n{'=' * 60}")
     print(f"Results: {passed} passed, {failed} failed")
     print(f"{'=' * 60}")
+    sys.exit(1 if failed else 0)
